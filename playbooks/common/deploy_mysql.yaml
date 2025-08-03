@@ -1,0 +1,30 @@
+---
+
+- name: Deploy MySQL DB
+
+  tasks:
+    - name: Install Mysql
+      ansible.builtin.apt:
+        name:
+          - mysql-server
+        state: present
+      register: mysql_install_var
+
+    - name: Show mysql_install_var value
+      ansible.builtin.debug:
+        var: mysql_install_var
+
+    - name: Init MySQL service
+      ansible.builtin.service:
+        name: mysqld
+        state: started
+      register: mysql_init_var
+
+    - name: Show mysql_init_var
+      ansible.builtin.debug:
+        var: mysql_init_var
+
+    - name: Show memory consume
+      ansible.builtin.debug:
+        var: mysql_init_var.status.MemoryCurrent
+...
