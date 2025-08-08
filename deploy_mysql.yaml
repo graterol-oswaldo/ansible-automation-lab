@@ -1,6 +1,7 @@
 ---
 
 - name: Deploy MySQL DB
+  hosts: all
 
   tasks:
     - name: Install Mysql
