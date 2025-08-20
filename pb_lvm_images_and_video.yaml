@@ -1,0 +1,420 @@
+---
+
+
+- name: Practice Section 17 - Working with LVM
+  hosts: all
+  vars:
+    disks:
+      - sdb
+      - sdc
+
+  tasks:
+  - name: Check disk info
+    community.general.parted:
+      device: /dev/{{ item }}
+      state: info
+      unit: B
+    loop: "{{ disks }}"
+    register: disk_info
+
+  - name: Calculate available disk space
+    ansible.builtin.set_fact:
+      disk_free_str: |
+        {% set result = {} %}
+        {% for item in disk_info.results if not item.failed %}
+          {% set total_bytes = item.disk.size | int %}
+          {% set parts_sum = item.partitions | map(attribute='size') | map('int') | sum %}
+          {% set _ = result.update({item.item: total_bytes - parts_sum}) %}
+        {% endfor %}
+        {{ result }}
+
+  - name: Convert disk_free (string) to disk_free (json)
+    ansible.builtin.set_fact:
+      disk_free: "{{ disk_free_str | trim | replace(\"'\", '\"') | from_json }}"
+
+  - name: Debug disk_free
+    ansible.builtin.debug:
+      var: disk_free
+
+  # Comprehensive rollback implementation
+  - name: Disk partitioning and LVM setup with comprehensive rollback
+    block:
+      # Initialize rollback state
+      - name: Initialize rollback state
+        ansible.builtin.set_fact:
+          rollback_state:
+            partitions: []
+            volume_groups: []
+            logical_volumes: []
+            filesystems: []
+            mount_points: []
+            mount_volumes: []
+            failed_at_step: ""
+
+      # Step 1: Create partitions
+      - name: Create partition in the available space
+        block:
+          - name: Create partitions
+            community.general.parted:
+              device: "/dev/{{ item }}"
+              unit: B
+              number: 2
+              state: present
+              fs_type: ext4
+              part_start: "-{{ disk_free[item] - 1048576 }}B"
+            loop: "{{ disks }}"
+            register: partition_results
+
+          - name: Update rollback state - partitions
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'partitions': rollback_state.partitions + ['/dev/' + item + '2']}) }}"
+            loop: "{{ disks }}"
+
+        rescue:
+          - name: Mark failure at partition step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'partition_creation'}) }}"
+          - ansible.builtin.fail:
+              msg: "Failed during partition creation"
+
+      # Step 2: Create volume group
+      - name: Create volume group
+        block:
+          - name: Create volume group with partitions
+            community.general.lvg:
+              vg: group2
+              pvs: "{{ rollback_state.partitions }}"
+            register: vg_result
+
+          - name: Update rollback state - volume group
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'volume_groups': rollback_state.volume_groups + ['group2']}) }}"
+
+        rescue:
+          - name: Mark failure at VG step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'volume_group_creation'}) }}"
+          - ansible.builtin.fail:
+              msg: "Failed during volume group creation"
+
+      # Step 3: Create logical volumes with individual rollback
+      - name: Create logical volumes with individual tracking
+        block:
+          - name: Create logical volume {{ item }}
+            community.general.lvol:
+              vg: group2
+              lv: "lvol{{ item }}"
+              size: 4096M
+            loop:
+              - 1
+              - 2
+            register: lv_creation_results
+
+          # Update rollback state for each successful LV
+          - name: Update rollback state for successful LVs
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'logical_volumes': rollback_state.logical_volumes + ['group2/lvol' + item|string]}) }}"
+            loop: "{{ range(1, 3) | list }}"
+            when:
+              - lv_creation_results is defined
+              - lv_creation_results.results is defined
+              - lv_creation_results.results | length >= item
+              - lv_creation_results.results[item-1] is succeeded
+
+        rescue:
+          - name: Mark failure at LV step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'logical_volume_creation'}) }}"
+
+          - name: Display partial LV creation status
+            ansible.builtin.debug:
+              msg:
+                - "Failed during logical volume creation"
+                - "Successfully created LVs: {{ rollback_state.logical_volumes }}"
+                - "Will rollback all created resources"
+
+          - ansible.builtin.fail:
+              msg: "Failed during logical volume creation"
+
+      # Step 4: Create FileSystem in LVs
+      - name: Create filesystem in LVs
+        block:
+          - name: Create FS
+            community.general.filesystem:
+              dev: '/dev/group2/{{ item }}'
+              fstype: ext4
+              state: present
+              uuid: random
+            loop:
+              - lvol1
+              - lvol2
+
+          - name: Update rollback state for successful filesystem created fs
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'filesystems': rollback_state.filesystems + ['/dev/group2/' + item ]}) }}"
+            loop:
+              - lvol1
+              - lvol2
+
+        rescue:
+          - name: Mark fail at create fs step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'filesystems_creation'}) }}"
+
+          - name: Display partial filesystem creation
+            ansible.builtin.debug:
+              msg:
+                - "Failed during filesystems creation"
+                - "Successfully created filesystems: {{ rollback_state.filesystems }}"
+                - "Will rollback all created resources"
+
+          - ansible.builtin.fail:
+              msg: "Failed during filesystems creation"
+
+      # Step 5: Create directories to use as mount point
+      - name: Create directories to use as mount point
+        block:
+          - name: Create directories
+            ansible.builtin.file:
+              path: "{{ item }}"
+              state: directory
+              mode: '775'
+            loop:
+              - /images
+              - /videos
+            register: create_mount_points
+
+          - name: Update rollback state for successful created directories to use as mount point
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'mount_points': rollback_state.mount_points + [ item ]}) }}"
+            loop:
+              - /images
+              - /videos
+            when:
+              - create_mount_points is defined
+              - create_mount_points.results is defined
+              - create_mount_points.results | length >= 2
+
+        rescue:
+          - name: Mark fail at create mount points step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'mount_points_creation'}) }}"
+
+          - name: Display partial mount points creation
+            ansible.builtin.debug:
+              msg:
+                - "Failed during mount points creation"
+                - "Successfully created mount points: {{ rollback_state.mount_points }}"
+                - "Will rollback all created resources"
+
+          - ansible.builtin.fail:
+              msg: "Failed during mount points creation"
+
+      # Step 6: Mounting the LVs in the mount points
+      - name: Mounting the LVs in the mount points
+        block:
+          - name: Mount the LVs
+            ansible.posix.mount:
+              path: "{{ '/images' if item == '/dev/group2/lvol1' else '/videos' }}"
+              src: "{{ item }}"
+              fstype: ext4
+              state: mounted
+            loop:
+              - /dev/group2/lvol1
+              - /dev/group2/lvol2
+            register: lv_mount_result
+
+          - name: Update rollback state for successful mounted LVs
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'mount_volumes': rollback_state.mount_volumes + [ item ]}) }}"
+            loop:
+              - /dev/group2/lvol1
+              - /dev/group2/lvol2
+            when:
+              - lv_mount_result is defined
+              - lv_mount_result.results is defined
+              - lv_mount_result.results | length >= 2
+
+        rescue:
+          - name: Mark fail at mount LVs step
+            ansible.builtin.set_fact:
+              rollback_state: "{{ rollback_state | combine({'failed_at_step': 'mount_logical_volumes'}) }}"
+
+          - name: Display partial LVs mounted
+            ansible.builtin.debug:
+              msg:
+                - "Failed during LVs mounting"
+                - "Successfully LVs mounted: {{ rollback_state.mount_volumes }}"
+                - "Will rollback all created resources"
+
+          - ansible.builtin.fail:
+              msg: "Failed during LVs mounting"
+
+    rescue:
+      - name: Start comprehensive rollback
+        ansible.builtin.debug:
+          msg:
+            - "=== STARTING ROLLBACK PROCESS ==="
+            - "Failed at step: {{ rollback_state.failed_at_step }}"
+            - "Resources to rollback:"
+            - "  - Logical Volumes: {{ rollback_state.logical_volumes }}"
+            - "  - Volume Groups: {{ rollback_state.volume_groups }}"
+            - "  - Partitions: {{ rollback_state.partitions }}"
+            - "  - Filesystems: {{ rollback_state.filesystems }}"
+            - "  - Mount Points: {{ rollback_state.mount_points }}"
+            - "  - Mount Volumes: {{ rollback_state.mount_volumes }}"
+
+      # Rollback mount volumes
+      - name: Rollback mount volumes
+        ansible.posix.mount:
+          path: "{{ '/images' if item == '/dev/group2/lvol1' else '/videos' }}"
+          src: "{{ item }}"
+          fstype: ext4
+          state: unmounted
+        loop:
+          - /dev/group2/lvol1
+          - /dev/group2/lvol2
+        ignore_errors: true
+        register: mount_volumes_rollback_results
+
+      # Rollback mount points
+      - name: Rollback mount points
+        ansible.builtin.file:
+          path: "{{ item }}"
+          state: absent
+        loop:
+          - /images
+          - /videos
+        ignore_errors: true
+        register: mount_points_rollback_results
+
+      # Rollback filesystems
+      - name: Rollback filesystems
+        community.general.filesystem:
+          device: "{{ item.rstrip('2') }}"
+          state: absent
+        loop: "{{ rollback_state.filesystems }}"
+        when: rollback_state.filesystems | length > 0
+        ignore_errors: true
+        register: filesystems_rollback_results
+
+      # Rollback logical volumes (including partial creations)
+      - name: Rollback logical volumes
+        community.general.lvol:
+          vg: "{{ item.split('/')[0] }}"
+          lv: "{{ item.split('/')[1] }}"
+          state: absent
+          force: true
+        loop: "{{ rollback_state.logical_volumes }}"
+        when: rollback_state.logical_volumes | length > 0
+        ignore_errors: true
+        register: lv_rollback_results
+
+      # Rollback volume groups
+      - name: Rollback volume groups
+        community.general.lvg:
+          vg: "{{ item }}"
+          state: absent
+          force: true
+        loop: "{{ rollback_state.volume_groups }}"
+        when: rollback_state.volume_groups | length > 0
+        ignore_errors: true
+        register: vg_rollback_results
+
+      # Wait for VG removal to complete
+      - name: Wait for volume group cleanup
+        ansible.builtin.pause:
+          seconds: 2
+        when: rollback_state.volume_groups | length > 0
+
+      # Rollback partitions
+      - name: Rollback partitions
+        community.general.parted:
+          device: "{{ item.rstrip('2') }}"
+          number: 2
+          state: absent
+        loop: "{{ rollback_state.partitions }}"
+        when: rollback_state.partitions | length > 0
+        ignore_errors: true
+        register: partition_rollback_results
+
+
+      # Comprehensive rollback summary
+      - name: Display detailed rollback results
+        ansible.builtin.debug:
+          msg:
+            - "=== ROLLBACK COMPLETED ==="
+            - "Mount Logical Volumes:"
+            - >-
+              {{ ' - Removed: ' + 
+                (mount_volumes_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if mount_volumes_rollback_results is defined and 
+                    mount_volumes_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+
+            - "Mount Points:"
+            - >-
+              {{ ' - Removed: ' + 
+                (mount_points_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if mount_points_rollback_results is defined and 
+                    mount_points_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+
+            - "Filesystems:"
+            - >-
+              {{ ' - Removed: ' + 
+                (filesystems_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if filesystems_rollback_results is defined and 
+                    filesystems_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+
+            - "Logical Volumes:"
+            - >-
+              {{ ' - Removed: ' + 
+                (lv_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if lv_rollback_results is defined and 
+                    lv_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+
+            - "Volume Groups:"
+            - >-
+              {{ ' - Removed: ' + 
+                (vg_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if vg_rollback_results is defined and 
+                    vg_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+
+            - "Partitions:"
+            - >-
+              {{ ' - Removed: ' + 
+                (partition_rollback_results.results | 
+                  selectattr('changed', 'equalto', true) | 
+                  map(attribute='item') | list | join(', '))
+                if partition_rollback_results is defined and 
+                    partition_rollback_results.results | 
+                    selectattr('changed', 'equalto', true) | list | length > 0
+                else ' - None removed' }}
+      - name: Fail playbook with original error
+        ansible.builtin.fail:
+          msg: "Disk setup failed at {{ rollback_state.failed_at_step }}. All changes have been rolled back."
+
+    always:
+      - name: Final status message
+        ansible.builtin.debug:
+          msg: "{{ 'Disk setup completed successfully!' if rollback_state.failed_at_step == '' else 'Disk setup failed but rollback completed successfully.' }}"
+...
