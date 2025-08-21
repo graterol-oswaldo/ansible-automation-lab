@@ -9,3 +9,9 @@ venv/
 # Ansible
 .ansible/
 *.retry
+
+ansible.cfg
+inventory.yaml
+
+vars/
+
