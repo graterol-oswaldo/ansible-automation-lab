@@ -46,7 +46,7 @@
         docker_users: "{{ docker_users_string.split(',') | map('trim') | select('string') | list }}"
       when: 
         - docker_users_string is defined
-        - docker_users_string != ""
+        - docker_users_string | length > 0
 
     - name: Update apt package index
       ansible.builtin.apt:
@@ -112,7 +112,7 @@
         name: "{{ docker_packages }}"
         state: present
         update_cache: true
-      when: docker_version == ""
+      when: docker_version | length == 0
       tags: [install]
 
     - name: Install Docker packages (specific version)
