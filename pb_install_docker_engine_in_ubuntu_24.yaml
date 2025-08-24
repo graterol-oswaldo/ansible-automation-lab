@@ -121,7 +121,7 @@
         state: present
         update_cache: true
       loop: "{{ docker_packages }}"
-      when: docker_version != ""
+      when: docker_version | length > 0
       tags: [install]
 
     - name: Ensure Docker service is started and enabled
