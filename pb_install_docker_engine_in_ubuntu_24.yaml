@@ -1,6 +1,6 @@
 ---
 - name: Install Docker Engine on Ubuntu Server
-  hosts: ubuntu-srv
+  hosts: all
   become: true
   gather_facts: true
   vars:
