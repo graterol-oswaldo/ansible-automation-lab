@@ -174,12 +174,17 @@
         state: restarted
 
   post_tasks:
+    - name: Get Docker service status
+      ansible.builtin.service_facts:
+      tags: [info]
+
     - name: Display post-installation information
       ansible.builtin.debug:
         msg:
           - "Docker Engine has been successfully installed on {{ inventory_hostname }}"
           - "Version: {{ docker_version_output.stdout }}"
-          - "Service status: {{ ansible_facts['services']['docker']['state'] }}"
+          - "Service status: {{ ansible_facts.services['docker.service'].state | default('unknown') }}"
+          - "Service enabled: {{ ansible_facts.services['docker.service'].status | default('unknown') }}"
           - "To use Docker as non-root user, add users to 'docker' group"
           - "Consider running 'docker system prune' periodically to clean up unused resources"
       tags: [info]
