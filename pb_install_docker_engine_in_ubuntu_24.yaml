@@ -28,7 +28,7 @@
         that:
           - ansible_distribution == "Ubuntu"
           - ansible_distribution_version is version('22.04', '>=')
-          - ansible_architecture in ['x86_64', 'aarch64', 'armv7l', 's390x', 'ppc64le']
+          - ansible_architecture in ['x86-64', 'aarch64', 'armv7l', 's390x', 'ppc64le']
         fail_msg: "This playbook requires Ubuntu 22.04+ on supported architecture"
         success_msg: "OS requirements verified: {{ ansible_distribution }} {{ ansible_distribution_version }} on {{ ansible_architecture }}"
 
