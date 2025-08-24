@@ -13,8 +13,11 @@
     
     # Optional: Specify Docker version (leave empty for latest)
     docker_version: ""
-    
-    # Users to add to docker group (optional)
+
+    # Comma-separated string of users, e.g., "user1,user2"
+    docker_users_string: ""    
+
+    # Users to add to docker group (optional) 
     docker_users: []
 
     # Architecture mapping for Docker repository
