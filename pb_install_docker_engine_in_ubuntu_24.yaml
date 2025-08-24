@@ -33,6 +33,13 @@
         success_msg: "OS requirements verified: {{ ansible_distribution }} {{ ansible_distribution_version }} on {{ ansible_architecture }}"
 
   tasks:
+    - name: Process docker users from string input
+      ansible.builtin.set_fact:
+        docker_users: "{{ docker_users_string.split(',') | map('trim') | select('string') | list }}"
+      when: 
+        - docker_users_string is defined
+        - docker_users_string != ""
+
     - name: Update apt package index
       ansible.builtin.apt:
         update_cache: true
