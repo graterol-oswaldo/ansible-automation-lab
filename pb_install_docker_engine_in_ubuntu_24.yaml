@@ -54,7 +54,7 @@
     - name: Update apt package index
       ansible.builtin.apt:
         update_cache: true
-        cache_valid_time: 3600
+        cache_valid_time: 5
       tags: [setup]
 
     - name: Remove conflicting packages
